@@ -1,0 +1,3 @@
+This is a placeholder for a sample audio file. In a real scenario, this would be a .wav or .mp3 file for testing transcription.
+Language: English
+Content: Meeting discussion about project updates.

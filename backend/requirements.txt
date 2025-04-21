@@ -1,0 +1,28 @@
+# API and web framework
+fastapi>=0.92.0
+uvicorn>=0.20.0
+pydantic>=1.10.5
+python-multipart>=0.0.5
+
+# PDF generation
+fpdf>=1.7.2
+
+# AI and ML libraries
+langchain>=0.0.123
+transformers>=4.35.0
+torch>=2.0.0
+numpy>=1.24.0
+
+# Audio processing
+librosa>=0.10.0
+soundfile>=0.12.1
+
+# Alibaba ASR dependencies
+modelscope==1.10.0
+datasets==2.11.0
+addict>=2.4.0
+einops>=0.8.0
+simplejson>=3.17.0
+
+# Database
+sqlite3>=0.0.0

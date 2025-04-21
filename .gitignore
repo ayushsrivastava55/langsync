@@ -1,0 +1,68 @@
+# General
+.DS_Store
+Thumbs.db
+*~
+
+# Node.js
+node_modules/
+npm-debug.*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+venv/
+env/
+ENV/
+
+# Virtual Environment
+venv
+env
+ENV
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project-specific
+/data/output/
+/data/audio/
+.env
+
+# Large model files
+*.bin
+*.ckpt
+*.pt
+*.pth
+*.onnx
+
+# Keep sample audio files for testing
+!/data/samples/*.wav
+!/data/samples/*.mp3
+
+# Database files
+*.db
+*.sqlite3
+
+# Deployment files
+.netlify
+.vercel
