@@ -1,19 +1,35 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Response
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import os
 import sqlite3
 from datetime import datetime
 # Import MMS model for English transcription
 import torch
-from transformers import Wav2Vec2ForCTC, AutoProcessor, AutoModelForCTC
+from transformers import Wav2Vec2ForCTC, AutoProcessor, AutoModelForCTC, AutoModelForSeq2SeqLM, MarianMTModel, MarianTokenizer
 import numpy as np
 import librosa
 # Import ModelScope for Alibaba ASR (Cantonese and Mandarin)
 from modelscope.pipelines import pipeline
 from modelscope.utils.constant import Tasks
+# Alibaba Cloud ISI API integration (using aliyun-python-sdk-core)
+import os
+import json
+import time
+from aliyunsdkcore.client import AcsClient
+from aliyunsdkcore.request import CommonRequest
 
 app = FastAPI(title="Multilingual Note-Taking AI Agent API")
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],  # Vite default port
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # MMS Model ID for English transcription
 MODEL_ID = "facebook/mms-1b-all"
@@ -74,39 +90,163 @@ def load_alibaba_asr_model(language="zh"):
     )
     return asr_pipeline
 
+# Alibaba Cloud ISI transcription using a public file link
+
+def transcribe_with_alibaba(file_link, language):
+    """
+    file_link: public URL to the audio file (must be accessible by Alibaba ISI)
+    language: 'zh' for Mandarin, 'yue' for Cantonese
+    Returns: transcription string or empty string on failure
+    """
+    REGION_ID = "ap-southeast-1"
+    PRODUCT = "nls-filetrans"
+    DOMAIN = "filetrans.ap-southeast-1.aliyuncs.com"
+    API_VERSION = "2019-08-23"
+    POST_REQUEST_ACTION = "SubmitTask"
+    GET_REQUEST_ACTION = "GetTaskResult"
+    STATUS_SUCCESS = "SUCCESS"
+    STATUS_RUNNING = "RUNNING"
+    STATUS_QUEUEING = "QUEUEING"
+    appkey = os.environ.get('ALIBABA_CLOUD_APPKEY')
+    akId = os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_ID')
+    akSecret = os.environ.get('ALIBABA_CLOUD_ACCESS_KEY_SECRET')
+    if not (appkey and akId and akSecret):
+        print("Alibaba Cloud ISI credentials not set. Skipping ISI transcription.")
+        return ""
+    client = AcsClient(akId, akSecret, REGION_ID)
+    postRequest = CommonRequest()
+    postRequest.set_domain(DOMAIN)
+    postRequest.set_version(API_VERSION)
+    postRequest.set_product(PRODUCT)
+    postRequest.set_action_name(POST_REQUEST_ACTION)
+    postRequest.set_method('POST')
+    task = {
+        "appkey": appkey,
+        "file_link": file_link,
+        "version": "4.0",
+        "enable_words": False
+    }
+    postRequest.add_body_params("Task", json.dumps(task))
+    try:
+        postResponse = client.do_action_with_exception(postRequest)
+        postResponse = json.loads(postResponse)
+        statusText = postResponse.get("StatusText", "")
+        if statusText != STATUS_SUCCESS:
+            print(f"Failed to submit ISI job: {postResponse}")
+            return ""
+        taskId = postResponse.get("TaskId", "")
+    except Exception as e:
+        print(f"Exception submitting ISI job: {e}")
+        return ""
+    # Poll for result
+    getRequest = CommonRequest()
+    getRequest.set_domain(DOMAIN)
+    getRequest.set_version(API_VERSION)
+    getRequest.set_product(PRODUCT)
+    getRequest.set_action_name(GET_REQUEST_ACTION)
+    getRequest.set_method('GET')
+    getRequest.add_query_param("TaskId", taskId)
+    statusText = ""
+    resultText = ""
+    for _ in range(30):  # up to 5 minutes
+        try:
+            getResponse = client.do_action_with_exception(getRequest)
+            getResponse = json.loads(getResponse)
+            statusText = getResponse.get("StatusText", "")
+            if statusText == STATUS_RUNNING or statusText == STATUS_QUEUEING:
+                time.sleep(10)
+                continue
+            elif statusText == STATUS_SUCCESS:
+                resultText = getResponse.get("Result", {}).get("Transcription", "")
+                break
+            else:
+                print(f"ISI job failed or unknown status: {getResponse}")
+                break
+        except Exception as e:
+            print(f"Exception polling ISI result: {e}")
+            break
+    return resultText
+
+# Translation function to translate non-English text to English
+def translate_to_english(text, source_language):
+    try:
+        if not text or len(text.strip()) == 0:
+            print(f"Translation skipped: Empty or invalid input text for language {source_language}")
+            return "Translation skipped: No text to translate"
+        
+        # Map language codes to Helsinki-NLP/opus-mt model codes
+        model_map = {
+            "zh": "Helsinki-NLP/opus-mt-zh-en",  # Chinese to English
+            "yue": "Helsinki-NLP/opus-mt-zh-en",  # Use Chinese model for Cantonese too
+        }
+        
+        model_name = model_map.get(source_language)
+        if not model_name:
+            print(f"Translation not available: No model defined for language {source_language}")
+            return f"Translation not available for language: {source_language}"
+        
+        print(f"Loading translation model: {model_name} for language {source_language}")
+        # Load translation model and tokenizer
+        tokenizer = MarianTokenizer.from_pretrained(model_name)
+        model = MarianMTModel.from_pretrained(model_name)
+        print(f"Translation model loaded successfully for language {source_language}")
+        
+        print(f"Translating text: '{text[:100]}...' (first 100 chars) from {source_language} to English")
+        # Translate the text
+        inputs = tokenizer(text, return_tensors="pt", padding=True)
+        with torch.no_grad():
+            translated_ids = model.generate(**inputs)
+        translated_text = tokenizer.batch_decode(translated_ids, skip_special_tokens=True)[0]
+        print(f"Translation successful: '{translated_text[:100]}...' (first 100 chars)")
+        
+        return translated_text
+    except Exception as e:
+        error_msg = f"Translation error for language {source_language}: {str(e)}"
+        print(error_msg)
+        return error_msg
+
 # Audio transcription using MMS (for English) or Alibaba ASR (for Mandarin/Cantonese)
-def transcribe_audio(file_path, language="en"):
-    if language == "en":
-        # Use MMS for English
-        processor, model = load_mms_model(language)
-        try:
-            # Load audio file
-            audio, sr = librosa.load(file_path, sr=16000)  # MMS model expects 16kHz sample rate
-            
-            # Process audio input for the model
-            inputs = processor(audio, sampling_rate=16000, return_tensors="pt")
-            
-            # Generate transcription
-            with torch.no_grad():
-                outputs = model(**inputs)
-                ids = torch.argmax(outputs.logits, dim=-1)[0]
-                transcription = processor.decode(ids)
-            
-            return transcription
-        except Exception as e:
-            print(f"Error during MMS transcription: {str(e)}")
-            return f"Simulated transcript of {os.path.basename(file_path)} in {SUPPORTED_LANGUAGES.get(language, 'English')}. Error occurred: {str(e)}"
-    else:
-        # Use Alibaba ASR for Mandarin or Cantonese
-        asr_pipeline = load_alibaba_asr_model(language)
-        try:
-            # Perform transcription
-            result = asr_pipeline(file_path)
-            transcription = result.get("text", "")
-            return transcription if transcription else f"No transcription output for {os.path.basename(file_path)} in {SUPPORTED_LANGUAGES.get(language, 'Unknown')}"
-        except Exception as e:
-            print(f"Error during Alibaba ASR transcription: {str(e)}")
-            return f"Simulated transcript of {os.path.basename(file_path)} in {SUPPORTED_LANGUAGES.get(language, 'Unknown')}. Error occurred: {str(e)}"
+def transcribe_audio(file_path, language):
+    try:
+        print(f"Starting transcription for file: {file_path}, language: {language}")
+        # Check if Alibaba Cloud credentials are set for Chinese languages
+        if language in ['zh', 'yue'] and all(os.environ.get(key) for key in ['ALIBABA_CLOUD_ACCESS_KEY_ID', 'ALIBABA_CLOUD_ACCESS_KEY_SECRET', 'ALIBABA_CLOUD_APPKEY']):
+            print(f"Using Alibaba Cloud ISI API for language: {language}")
+            transcription = transcribe_with_alibaba(file_path, language)
+            if transcription:
+                print(f"Transcription (Alibaba): {transcription[:100]}... (first 100 chars)")
+                translation = translate_to_english(transcription, language) if language != "en" else ""
+                return transcription, translation
+            else:
+                print(f"Alibaba transcription failed, falling back to MMS model")
+                # Fall back to MMS if Alibaba fails
+        
+        # Load audio file
+        audio, sr = librosa.load(file_path, sr=16000)
+        
+        # Load MMS model based on language
+        model_name = MODEL_ID
+        print(f"Loading MMS model: {model_name} for language {language}")
+        processor = AutoProcessor.from_pretrained(model_name)
+        model = AutoModelForCTC.from_pretrained(model_name)
+        print(f"MMS model loaded successfully for language {language}")
+        
+        # Process audio
+        inputs = processor(audio, sampling_rate=sr, return_tensors="pt", padding=True)
+        
+        # Perform transcription
+        with torch.no_grad():
+            logits = model(**inputs).logits
+        predicted_ids = torch.argmax(logits, dim=-1)
+        transcription = processor.batch_decode(predicted_ids)[0]
+        print(f"Transcription (MMS): {transcription[:100]}... (first 100 chars)")
+        
+        # Translate if not English
+        translation = translate_to_english(transcription, language) if language != "en" else ""
+        return transcription, translation
+    except Exception as e:
+        print(f"Transcription error: {str(e)}")
+        return f"Transcription error: {str(e)}", f"Translation error due to transcription failure: {str(e)}"
 
 class NoteResponse(BaseModel):
     id: int
@@ -122,20 +262,42 @@ async def upload_audio(file: UploadFile = File(...), language: str = "en"):
             buffer.write(await file.read())
         
         # Perform transcription using MMS model or Alibaba ASR
-        transcript = transcribe_audio(file_path, language)
+        # This now returns both transcription and translation (if applicable)
+        transcript, translation = transcribe_audio(file_path, language)
+        
         # Placeholder for summarization logic
         summary = f"Summary of {file.filename}"
 
         # Store in database
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO notes (title, transcript, summary, language) VALUES (?, ?, ?, ?)",
-                       (file.filename, transcript, summary, language))
+        
+        # Update database schema if needed to store translations
+        cursor.execute("PRAGMA table_info(notes)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if "translation" not in columns:
+            cursor.execute("ALTER TABLE notes ADD COLUMN translation TEXT")
+            conn.commit()
+        
+        cursor.execute("INSERT INTO notes (title, transcript, translation, summary, language) VALUES (?, ?, ?, ?, ?)",
+                       (file.filename, transcript, translation, summary, language))
         conn.commit()
         note_id = cursor.lastrowid
         conn.close()
 
-        return JSONResponse(content={"id": note_id, "filename": file.filename, "summary": summary})
+        # Return both transcription and translation in the response
+        response_data = {
+            "id": note_id, 
+            "filename": file.filename, 
+            "transcription": transcript, 
+            "summary": summary
+        }
+        
+        # Add translation to response if available
+        if translation:
+            response_data["translation"] = translation
+            
+        return JSONResponse(content=response_data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

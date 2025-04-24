@@ -1,0 +1,86 @@
+@import "tailwindcss";
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #f5f5f5;
+}
+
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Audio recorder styles */
+.audio-recorder {
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2) !important;
+  border-radius: 8px !important;
+  padding: 10px !important;
+}
+
+.audio-recorder .audio-recorder-mic {
+  width: 50px !important;
+  height: 50px !important;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #888;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+/* Language selector */
+.language-selector {
+  margin-bottom: 20px;
+}
+
+/* Transcription result */
+.transcription-result {
+  margin-top: 20px;
+  padding: 20px;
+  background-color: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+/* PDF export button */
+.pdf-button {
+  margin-top: 20px;
+}
+
+/* Responsive adjustments */
+@media (max-width: 600px) {
+  .toolbar-buttons {
+    display: none;
+  }
+  
+  .mobile-menu {
+    display: block;
+  }
+}
+
+@media (min-width: 601px) {
+  .toolbar-buttons {
+    display: flex;
+  }
+  
+  .mobile-menu {
+    display: none;
+  }
+}
